@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="Encoding">
+    <file url="file://$PROJECT_DIR$/univhis-common-lib/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/univhis-file-service/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/univhis-notification-log-service/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/univhis-order-service/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/univhis-product-service/src/main/java" charset="UTF-8" />
+    <file url="file://$PROJECT_DIR$/univhis-user-auth-service/src/main/java" charset="UTF-8" />
+  </component>
+</project>

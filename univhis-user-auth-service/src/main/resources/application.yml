@@ -1,0 +1,56 @@
+# Server Configuration
+server:
+  port: 8081 # 为用户认证服务指定一个独特的端口，确保在所有微服务中唯一
+
+# Spring Application Configuration
+spring:
+  application:
+    name: univhis-user-auth-service # 服务在 Nacos 中注册的名称，其他服务将通过此名称发现和调用它
+  cloud:
+    nacos:
+      discovery:
+        server-addr: 192.168.175.1:8848 # Nacos 服务器的地址。请确保 Nacos 实例正在此地址运行。
+        # namespace: your_nacos_namespace_id # 如果您在 Nacos 中使用了命名空间，请在此处填写其ID
+        # group: DEFAULT_GROUP # 如果您使用了 Nacos 服务分组，可以在此处指定
+
+  # DataSource Configuration (数据库连接配置)
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver # MySQL 驱动
+    url: jdbc:mysql://localhost:3306/univhis?serverTimezone=GMT%2B8&useUnicode=true&characterEncoding=utf8&allowPublicKeyRetrieval=true&useSSL=false
+    username: root # 您的数据库用户名
+    password: 123456 # 您的数据库密码
+    # Druid 连接池配置
+    druid:
+      initial-size: 5
+      max-active: 20
+      min-idle: 5
+      max-wait: 60000
+      pool-prepared-statements: true
+      max-pool-prepared-statement-per-connection-size: 20
+      validation-query: SELECT 1
+      test-on-borrow: false
+      test-on-return: false
+      test-while-idle: true
+      time-between-eviction-runs-millis: 60000
+      min-evictable-idle-time-millis: 300000
+      filters: stat,wall,log4j # 监控和防火墙
+      connection-properties: druid.stat.mergeSql=true;druid.stat.slowSqlMillis=5000
+
+# MyBatis-Plus Configuration
+mybatis-plus:
+  mapper-locations: classpath*:mapper/**/*.xml # 扫描 Mapper XML 文件。确保您的 User.xml, Role.xml, Permission.xml 放在此处定义的路径下
+  # type-handlers-package: com.univhis.common.handler # 如果有自定义的 TypeHandler (如 ListHandler)，需要配置包路径
+  global-config:
+    db-config:
+      # id-type: auto # ID 主键策略，可根据您的需求设置
+      logic-delete-field: deleted # 逻辑删除字段（如果使用）
+      logic-delete-value: 1 # 逻辑删除值
+      logic-not-delete-value: 0 # 逻辑未删除值
+
+# 日志配置 (可选)
+logging:
+  level:
+    com.univhis: DEBUG # 根据需要调整日志级别
+    com.baomidou: INFO # Mybatis-Plus 框架的日志级别
+    org.springframework: INFO
+    org.springframework.cloud: INFO
