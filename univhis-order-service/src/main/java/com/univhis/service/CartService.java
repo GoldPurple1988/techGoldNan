@@ -8,18 +8,28 @@ import com.univhis.entity.Goods;
 import com.univhis.mapper.CartMapper;
 import org.json.JSONException;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate; // Import RestTemplate
+import org.springframework.http.ResponseEntity;
+import com.univhis.common.Result;
+import java.util.LinkedHashMap; // Import LinkedHashMap
 
 import javax.annotation.Resource;
 import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
-@Service // 使用 Spring 的 @Service 注解，将 CartService 标记为一个服务组件，纳入 Spring 容器管理
-public class CartService extends ServiceImpl<CartMapper, Cart> { // CartService 继承自 ServiceImpl，实现了 Cart 实体类的通用 CRUD 操作，并指定了对应的 Mapper 为 CartMapper
+@Service
+public class CartService extends ServiceImpl<CartMapper, Cart> {
 
-    @Resource // 使用 JSR-250 规范中的 @Resource 注解，将 GoodsService 类型的 Bean 注入到 CartService 中
-    private GoodsService goodsService; // 声明私有的 GoodsService 类型的成员变量 goodsService，用于调用 GoodsService 中的方法
+    @Resource
+    private CartMapper cartMapper; // Keep the mapper for direct cart operations
+
+    @Resource
+    private RestTemplate restTemplate; // Inject RestTemplate
+
+    private static final String PRODUCT_SERVICE_NAME = "univhis-product-service"; // Nacos service name for product-service
 
     /**
      * 计算购物车商品总价和优惠金额
@@ -27,24 +37,51 @@ public class CartService extends ServiceImpl<CartMapper, Cart> { // CartService 
      * @return 包含购物车详细信息、总价和优惠金额的 Map 对象
      * @throws JSONException 当处理 JSON 数据时发生错误
      */
-    public Map<String, Object> findAll(List<Cart> carts) throws org.json.JSONException { // 定义一个公共方法 findAll，接收购物车列表作为参数，返回包含计算结果的 Map 对象，并声明可能抛出 JSONException
-        BigDecimal totalPrice = new BigDecimal(0); // 初始化总价为 0
-        BigDecimal originPrice = new BigDecimal(0); // 初始化原价为 0
-        Map<String, Object> res = new HashMap<>(); // 创建一个 HashMap，用于存储计算结果
+    public Map<String, Object> findAll(List<Cart> carts) throws org.json.JSONException {
+        BigDecimal totalPrice = new BigDecimal(0);
+        BigDecimal originPrice = new BigDecimal(0);
+        Map<String, Object> res = new HashMap<>();
 
-        for (Cart cart : carts) { // 遍历购物车列表
-            Long goodsId = cart.getGoodsId(); // 获取购物车中商品的 ID
-            Goods goods = goodsService.getById(goodsId); // 调用 goodsService 的 getById 方法，根据商品 ID 获取商品详细信息
-            goods.setRealPrice(goods.getPrice().multiply(BigDecimal.valueOf(goods.getDiscount()))); // 计算商品的实际价格（价格乘以折扣）
-            cart.setGoods(goods); // 将包含实际价格的商品信息设置回 Cart 对象中
+        for (Cart cart : carts) {
+            Long goodsId = cart.getGoodsId();
 
-            totalPrice = totalPrice.add(goods.getRealPrice().multiply(BigDecimal.valueOf(cart.getCount()))); // 累加商品实际价格乘以数量到总价
-            originPrice = originPrice.add(goods.getPrice().multiply(BigDecimal.valueOf(cart.getCount()))); // 累加商品原价格乘以数量到原价
+            // Use RestTemplate to call product-service to get goods details
+            try {
+                ResponseEntity<Result> goodsResponse = restTemplate.getForEntity(
+                        "http://" + PRODUCT_SERVICE_NAME + "/api/goods/" + goodsId,
+                        Result.class
+                );
+
+                if (goodsResponse.getStatusCode().is2xxSuccessful() && Objects.requireNonNull(goodsResponse.getBody()).getCode().equals("0")) {
+                    LinkedHashMap goodsData = (LinkedHashMap) goodsResponse.getBody().getData();
+                    Goods goods = new Goods();
+                    goods.setId(Long.valueOf(goodsData.get("id").toString()));
+                    goods.setName((String) goodsData.get("name"));
+                    goods.setPrice(new BigDecimal(goodsData.get("price").toString()));
+                    goods.setDiscount(Double.valueOf(goodsData.get("discount").toString()));
+                    goods.setStore((Integer) goodsData.get("store"));
+                    goods.setSales((Integer) goodsData.get("sales"));
+                    goods.setImgs((String) goodsData.get("imgs"));
+                    // Map other fields as needed
+
+                    goods.setRealPrice(goods.getPrice().multiply(BigDecimal.valueOf(goods.getDiscount())));
+                    cart.setGoods(goods);
+
+                    totalPrice = totalPrice.add(goods.getRealPrice().multiply(BigDecimal.valueOf(cart.getCount())));
+                    originPrice = originPrice.add(goods.getPrice().multiply(BigDecimal.valueOf(cart.getCount())));
+                } else {
+                    log.error("Failed to get goods details for goodsId: " + goodsId + " from product-service. Response: " + goodsResponse.getBody());
+                    // Handle case where goods details cannot be fetched, e.g., skip this cart item or throw an exception
+                }
+            } catch (Exception e) {
+                log.error("Error calling product-service for goodsId: " + goodsId, e);
+                // Handle network errors or service unavailability
+            }
         }
 
-        res.put("list", carts);  // 将包含商品详细信息的购物车列表放入结果 Map 中
-        res.put("totalPrice", totalPrice);  // 将计算得到的总价放入结果 Map 中
-        res.put("discount", originPrice.subtract(totalPrice));    // 计算折扣优惠金额，并放入结果 Map 中
-        return res; // 返回包含购物车详细信息、总价和优惠金额的 Map 对象
+        res.put("list", carts);
+        res.put("totalPrice", totalPrice);
+        res.put("discount", originPrice.subtract(totalPrice));
+        return res;
     }
 }

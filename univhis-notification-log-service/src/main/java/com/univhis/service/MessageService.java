@@ -1,4 +1,4 @@
-package com.univhis.service;
+package com.univhis.service; // Original package name
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -6,37 +6,91 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.univhis.entity.Message;
 import com.univhis.entity.User;
 import com.univhis.mapper.MessageMapper;
-import com.univhis.user.auth.service.UserService;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate; // Import RestTemplate
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
+import cn.hutool.log.Log; // Import Hutool Log
+import cn.hutool.log.LogFactory; // Import Hutool LogFactory
 
 import javax.annotation.Resource;
+import javax.servlet.http.HttpServletRequest; // Import HttpServletRequest
 import java.util.List;
+import java.util.Objects;
+import java.util.LinkedHashMap; // Import LinkedHashMap
+import java.util.ArrayList; // Import ArrayList
+import com.univhis.common.Result; // Import your common Result class
 
-@Service // 使用 Spring 的 @Service 注解，将 MessageService 标记为一个服务组件，纳入 Spring 容器管理
-public class MessageService extends ServiceImpl<MessageMapper, Message> { // MessageService 继承自 ServiceImpl，实现了 Message 实体类的通用 CRUD 操作，并指定了对应的 Mapper 为 MessageMapper
+@Service
+public class MessageService extends ServiceImpl<MessageMapper, Message> {
 
-    @Resource // 使用 JSR-250 规范中的 @Resource 注解，将 MessageMapper 类型的 Bean 注入到 MessageService 中
-    private MessageMapper messageMapper; // 声明私有的 MessageMapper 类型的成员变量 messageMapper，用于进行数据库操作
+    // Declare and initialize the logger instance using Hutool's LogFactory
+    private static final Log log = LogFactory.get();
 
-    @Resource // 使用 JSR-250 规范中的 @Resource 注解，将 UserService 类型的 Bean 注入到 MessageService 中
-    private UserService userService; // 声明私有的 UserService 类型的成员变量 userService，用于调用 UserService 中的方法
+    @Resource
+    private MessageMapper messageMapper;
+
+    @Resource
+    private RestTemplate restTemplate; // Inject RestTemplate
+
+    @Resource
+    private HttpServletRequest request; // To get the token
+
+    private static final String USER_AUTH_SERVICE_NAME = "univhis-user-auth-service";
+    private static final String FILE_SERVICE_NAME = "univhis-file-service"; // Nacos service name for file-service
 
     /**
      * 根据外键ID查询消息列表，并封装相关用户信息和父消息
      * @param foreignId 外键ID
      * @return 包含用户信息和父消息的消息列表
      */
-    public List<Message> findByForeign(Long foreignId) { // 定义一个公共方法 findByForeign，接收外键ID作为参数，返回消息列表
-        // 使用 MyBatis-Plus 的 LambdaQueryWrapper 构建查询条件，根据外键ID查询消息，并按照ID降序排列
+    public List<Message> findByForeign(Long foreignId) {
         LambdaQueryWrapper<Message> queryWrapper = Wrappers.<Message>lambdaQuery().eq(Message::getForeignId, foreignId).orderByDesc(Message::getId);
-        List<Message> list = list(queryWrapper); // 调用父类 ServiceImpl 的 list 方法，根据查询条件获取消息列表
-        for (Message Message : list) { // 遍历消息列表
-            User one = userService.getOne(Wrappers.<User>lambdaQuery().eq(User::getUsername, Message.getUsername())); // 根据消息中的用户名查询对应的用户
-            Message.setAvatar("http://localhost:9999/files/" + one.getAvatar()); // 设置消息发送者的头像 URL
-            Long parentId = Message.getParentId(); // 获取消息的父消息ID
-            list.stream().filter(c -> c.getId().equals(parentId)).findFirst().ifPresent(Message::setParentMessage); // 从消息列表中找到父消息，并设置到当前消息对象中
+        List<Message> list = list(queryWrapper);
+
+        HttpHeaders headers = new HttpHeaders();
+        // Assuming the current request has a token that might be needed for user service
+        String token = request.getHeader("token");
+        if (token != null && !token.isEmpty()) {
+            headers.set("token", token);
         }
-        return list; // 返回处理后的消息列表
+        HttpEntity<String> entity = new HttpEntity<>(headers);
+
+        for (Message message : list) {
+            // Call user-auth-service to get user details
+            try {
+                ResponseEntity<Result> userResponse = restTemplate.exchange(
+                        "http://" + USER_AUTH_SERVICE_NAME + "/api/user/username/" + message.getUsername(),
+                        HttpMethod.GET,
+                        entity,
+                        Result.class
+                );
+
+                if (userResponse.getStatusCode().is2xxSuccessful() && Objects.requireNonNull(userResponse.getBody()).getCode().equals("0")) {
+                    LinkedHashMap userData = (LinkedHashMap) userResponse.getBody().getData();
+                    User user = new User();
+                    user.setId(Long.valueOf(userData.get("id").toString()));
+                    user.setUsername((String) userData.get("username"));
+                    user.setAvatar((String) userData.get("avatar"));
+
+                    // Set avatar URL from file service
+                    // Assuming file service URL is http://univhis-file-service/files/{flag}
+                    message.setAvatar("http://" + FILE_SERVICE_NAME + "/files/" + user.getAvatar());
+                }
+            } catch (Exception e) {
+                // Corrected logging call: now `log` is properly defined and the two-argument `warn` method is valid.
+                log.warn("Failed to get user details for message from user-auth-service: " + message.getUsername(), e);
+                // Set a default avatar or handle error
+                message.setAvatar("http://" + FILE_SERVICE_NAME + "/files/default_avatar.png");
+            }
+
+            Long parentId = message.getParentId();
+            if (parentId != null) {
+                list.stream().filter(c -> c.getId().equals(parentId)).findFirst().ifPresent(message::setParentMessage);
+            }
+        }
+        return list;
     }
 }
-

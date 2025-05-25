@@ -14,12 +14,21 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.univhis.common.Result;
+import com.univhis.entity.Log; // Import Log entity for remote logging example
 import com.univhis.entity.Order;
 import com.univhis.entity.User;
 import com.univhis.exception.CustomException;
-import com.univhis.service.LogService;
+import com.univhis.service.LogService; // Using the LogService from common-lib which is a proxy
 import com.univhis.user.auth.service.UserService;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.client.RestTemplate; // Import RestTemplate
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
+import cn.hutool.core.date.DateUtil; // For DateUtil
+import java.util.Date; // For Date
+
 
 import javax.annotation.Resource;
 import javax.servlet.ServletOutputStream;
@@ -31,6 +40,8 @@ import java.net.URLEncoder;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+
 
 @RestController
 @RequestMapping("/api/user")
@@ -40,12 +51,24 @@ public class UserController {
     private UserService userService;
 
     @Resource
-    private LogService logService;
+    private LogService logService; // Keep this direct injection as it's from the common lib
+
     @Resource
     private HttpServletRequest request;
 
+    @Resource
+    private RestTemplate restTemplate; // For inter-service calls
+    private static final String NOTIFICATION_LOG_SERVICE_NAME = "univhis-notification-log-service";
+
+
     public User getUser() {
         String token = request.getHeader("token");
+        if (StrUtil.isBlank(token)) {
+            // This method might be called internally or by an interceptor that already validated the token.
+            // If this is a direct endpoint call that needs user info, this check is valid.
+            // Otherwise, an interceptor should handle 401.
+            throw new CustomException("401", "未获取到token, 请重新登录");
+        }
         String username = JWT.decode(token).getAudience().get(0);
         return userService.getOne(Wrappers.<User>lambdaQuery().eq(User::getUsername, username));
     }
@@ -63,6 +86,8 @@ public class UserController {
         String token = JWT.create().withAudience(res.getUsername()).sign(Algorithm.HMAC256(res.getPassword()));
         res.setToken(token);
 
+        // Call LogService via RestTemplate (if LogService was its own microservice endpoint)
+        // For now, it's a direct call to the LogService injected from common-lib
         logService.log(user.getUsername(), StrUtil.format("用户 {} 登录系统", user.getUsername()));
         return Result.success(res);
     }
@@ -81,7 +106,7 @@ public class UserController {
         }
         user.setAccount(new BigDecimal(0));
         User dbUser = userService.register(user);
-        request.getSession().setAttribute("user", user);
+        request.getSession().setAttribute("user", user); // Session usage is not common in microservices without sticky sessions
 
         logService.log(user.getUsername(), StrUtil.format("用户 {} 注册账号成功", user.getUsername()));
         return Result.success(dbUser);
@@ -121,22 +146,30 @@ public class UserController {
 
     /**
      * 更新账户余额
-     * @param money
+     * @param money  The amount to add or deduct. Positive for add, negative for deduct.
      * @return
      */
     @PutMapping("/account/{money}")
     public Result<?> recharge(@PathVariable BigDecimal money) {
-        User user = getUser();
-        user.setAccount(user.getAccount().add(money));
-        userService.updateById(user);
-        logService.log(StrUtil.format("更新用户账户：{}", user.getUsername()));
+        User user = getUser(); // Get the current user from token
+        // Fetch the user's current account from the database to ensure correctness
+        User dbUser = userService.getById(user.getId());
+        if (dbUser == null) {
+            throw new CustomException("-1", "User not found for account update.");
+        }
+
+        dbUser.setAccount(dbUser.getAccount().add(money)); // Add or deduct the money
+        userService.updateById(dbUser);
+        logService.log(StrUtil.format("更新用户 {} 账户：{}", dbUser.getUsername(), money));
         return Result.success();
     }
 
     @DeleteMapping("/{id}")
     public Result<?> delete(@PathVariable Long id) {
         User user = userService.getById(id);
-        logService.log(StrUtil.format("删除用户 {}", user.getUsername()));
+        if (user != null) {
+            logService.log(StrUtil.format("删除用户 {}", user.getUsername()));
+        }
         userService.removeById(id);
         return Result.success();
     }
@@ -145,6 +178,24 @@ public class UserController {
     public Result<User> findById(@PathVariable Long id) {
         return Result.success(userService.findById(id));
     }
+
+    // New endpoint to get user by username, used by other services (e.g., LogService, MessageService, OrderService)
+    @GetMapping("/username/{username}")
+    public Result<User> findByUsername(@PathVariable String username) {
+        // This endpoint should be accessible internally by other microservices.
+        // It's good to avoid directly exposing sensitive data without authentication/authorization
+        // if this endpoint is directly exposed to external clients.
+        // For internal microservice communication (assuming token is passed and validated by AuthInterceptor),
+        // it's generally fine.
+        User user = userService.getOne(Wrappers.<User>lambdaQuery().eq(User::getUsername, username));
+        if (user == null) {
+            throw new CustomException("-1", "User not found with username: " + username);
+        }
+        // Potentially remove sensitive info like password before returning to other services
+        user.setPassword(null);
+        return Result.success(user);
+    }
+
 
     @GetMapping
     public Result<List<User>> findAll() {
@@ -185,7 +236,4 @@ public class UserController {
         writer.close();
         IoUtil.close(System.out);
     }
-
-
 }
-
